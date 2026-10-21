@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Face XYZ Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js" crossorigin="anonymous"></script>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2d; --line:#26334e; --text:#eef4ff; --muted:#9aa9c4; --accent:#6ee7d8; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,sans-serif; background:radial-gradient(circle at top,#172545,var(--bg) 60%); color:var(--text); min-height:100vh; }
+    main { width:min(1100px,94vw); margin:32px auto; }
+    header { margin-bottom:22px; }
+    h1 { margin:0 0 8px; font-size:clamp(1.7rem,4vw,2.5rem); letter-spacing:-.04em; }
+    header p,.hint { color:var(--muted); margin:0; line-height:1.6; }
+    .layout { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(260px,.8fr); gap:18px; }
+    .panel { background:rgba(18,26,45,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 14px 38px #0003; }
+    .video-wrap { position:relative; overflow:hidden; border-radius:12px; background:#050914; aspect-ratio:4/3; display:grid; place-items:center; }
+    video,canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); }
+    canvas { pointer-events:none; }
+    .placeholder { padding:24px; text-align:center; color:var(--muted); }
+    .controls { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    button { border:0; border-radius:10px; padding:11px 15px; font-weight:700; cursor:pointer; background:var(--accent); color:#062321; }
+    button.secondary { background:#26334e; color:var(--text); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .status { margin-top:12px; font-size:.92rem; color:var(--muted); min-height:1.4em; }
+    .status.good { color:#6ee7d8; } .status.bad { color:#ffb4b4; }
+    .metric { background:#0b1222; border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:10px; }
+    .metric:first-of-type { margin-top:0; }
+    .metric .label { font-size:.8rem; color:var(--muted); letter-spacing:.12em; }
+    .value { font-variant-numeric:tabular-nums; font-size:1.65rem; font-weight:750; margin-top:4px; }
+    .value span { color:var(--accent); font-size:.95rem; font-weight:600; }
+    .small { font-size:.82rem; color:var(--muted); line-height:1.55; }
+    .legend { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; font-size:.82rem; color:var(--muted); }
+    .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
+    footer { margin-top:16px; }
+    @media(max-width:760px){ .layout{grid-template-columns:1fr;} main{margin:20px auto;} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Face XYZ Tracker</h1>
+    <p>웹캠으로 얼굴을 인식하고 얼굴 중심점의 X · Y · Z 값을 실시간으로 표시합니다.</p>
+  </header>
+  <div class="layout">
+    <section class="panel">
+      <div class="video-wrap" id="videoWrap">
+        <div class="placeholder" id="placeholder">시작 버튼을 누르고 카메라 권한을 허용하세요.</div>
+        <video id="video" autoplay playsinline muted hidden></video>
+        <canvas id="overlay" hidden></canvas>
+      </div>
+      <div class="controls">
+        <button id="startBtn">카메라 시작</button>
+        <button id="stopBtn" class="secondary" disabled>중지</button>
+      </div>
+      <div class="status" id="status" role="status">대기 중 · HTTPS 또는 localhost 환경에서 실행하세요.</div>
+      <div class="legend">
+        <span><i class="dot" style="background:#ff6b6b"></i>X 축</span>
+        <span><i class="dot" style="background:#6ee7d8"></i>Y 축</span>
+        <span><i class="dot" style="background:#8da7ff"></i>얼굴 랜드마크</span>
+      </div>
+    </section>
+    <aside class="panel">
+      <h2 style="margin:2px 0 14px">얼굴 중심 좌표</h2>
+      <div class="metric"><div class="label">X · 좌우</div><div class="value" id="xValue">— <span>px</span></div><div class="small">영상 왼쪽을 0으로 한 픽셀 좌표</div></div>
+      <div class="metric"><div class="label">Y · 상하</div><div class="value" id="yValue">— <span>px</span></div><div class="small">영상 위쪽을 0으로 한 픽셀 좌표</div></div>
+      <div class="metric"><div class="label">Z · 깊이 추정</div><div class="value" id="zValue">— <span>상대값</span></div><div class="small">MediaPipe가 추정한 상대 깊이값입니다. 실제 거리(cm)는 아닙니다.</div></div>
+      <div class="metric"><div class="label">인식 상태</div><div class="value" id="faceValue" style="font-size:1.2rem">얼굴 대기 중</div></div>
+      <p class="small">참고: X·Y는 영상 크기에 따른 픽셀 좌표이며, Z는 얼굴 메시의 상대 깊이 좌표입니다. 카메라 위치나 조명에 따라 값이 달라질 수 있습니다.</p>
+    </aside>
+  </div>
+  <footer class="small">개인정보 안내: 영상은 이 페이지에서 브라우저로 처리되며 별도로 업로드하지 않습니다. 카메라 권한은 사용자가 직접 허용해야 합니다.</footer>
+</main>
+<script type="module">
+  const { FaceLandmarker, FilesetResolver } = vision;
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const placeholder = document.getElementById('placeholder');
+  const statusEl = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  let landmarker = null, stream = null, running = false, lastVideoTime = -1;
+
+  function setStatus(message, type='') {
+    statusEl.textContent = message;
+    statusEl.className = 'status ' + type;
+  }
+  function fmt(value) { return Number.isFinite(value) ? value.toFixed(3) : '—'; }
+  function clearValues() {
+    document.getElementById('xValue').innerHTML = '— <span>px</span>';
+    document.getElementById('yValue').innerHTML = '— <span>px</span>';
+    document.getElementById('zValue').innerHTML = '— <span>상대값</span>';
+    document.getElementById('faceValue').textContent = '얼굴 대기 중';
+  }
+  async function start() {
+    startBtn.disabled = true;
+    setStatus('얼굴 인식 모델을 불러오는 중…');
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('이 브라우저 또는 접속 환경에서 카메라를 사용할 수 없습니다. GitHub Pages HTTPS 주소로 접속하세요.');
+      if (!landmarker) {
+        const files = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+        landmarker = await FaceLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate: 'GPU' },
+          runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false
+        });
+      }
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      video.srcObject = stream;
+      video.hidden = false; canvas.hidden = false; placeholder.hidden = true;
+      await video.play();
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      running = true; lastVideoTime = -1;
+      stopBtn.disabled = false;
+      setStatus('카메라 실행 중 · 얼굴을 화면 안에 맞춰 주세요.', 'good');
+      requestAnimationFrame(loop);
+    } catch (error) {
+      startBtn.disabled = false;
+      setStatus('시작 실패: ' + (error?.message || error) + ' 카메라 권한과 인터넷 연결을 확인하세요.', 'bad');
+      console.error(error);
+    }
+  }
+  function loop() {
+    if (!running) return;
+    if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      const result = landmarker.detectForVideo(video, performance.now());
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (result.faceLandmarks?.length) {
+        const points = result.faceLandmarks[0];
+        const xs = points.map(p => p.x * canvas.width);
+        const ys = points.map(p => p.y * canvas.height);
+        const x = xs.reduce((a,b)=>a+b,0) / xs.length;
+        const y = ys.reduce((a,b)=>a+b,0) / ys.length;
+        const z = points.reduce((a,p)=>a+p.z,0) / points.length;
+        document.getElementById('xValue').innerHTML = `${Math.round(x)} <span>px</span>`;
+        document.getElementById('yValue').innerHTML = `${Math.round(y)} <span>px</span>`;
+        document.getElementById('zValue').innerHTML = `${fmt(z)} <span>상대값</span>`;
+        document.getElementById('faceValue').textContent = '얼굴 인식 완료';
+        // Center marker and crosshair; video and overlay are mirrored together for selfie view.
+        ctx.strokeStyle = '#6ee7d8'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x-18,y); ctx.lineTo(x+18,y); ctx.moveTo(x,y-18); ctx.lineTo(x,y+18); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x,y,7,0,Math.PI*2); ctx.fillStyle='#6ee7d8'; ctx.fill();
+        // Sparse landmark dots for a lightweight overlay.
+        ctx.fillStyle = '#8da7ff';
+        for (let i=0; i<points.length; i+=12) {
+          ctx.beginPath(); ctx.arc(points[i].x*canvas.width, points[i].y*canvas.height, 1.7, 0, Math.PI*2); ctx.fill();
+        }
+      } else {
+        clearValues();
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+  function stop() {
+    running = false;
+    if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
+    video.srcObject = null; video.hidden = true; canvas.hidden = true; placeholder.hidden = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    startBtn.disabled = false; stopBtn.disabled = true;
+    clearValues(); setStatus('카메라가 중지되었습니다.');
+  }
+  startBtn.addEventListener('click', start);
+  stopBtn.addEventListener('click', stop);
+  window.addEventListener('beforeunload', () => { if (stream) stream.getTracks().forEach(track => track.stop()); });
+</script>
+</body>
+</html>
